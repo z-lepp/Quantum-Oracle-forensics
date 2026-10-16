@@ -5,7 +5,7 @@ Solver for the **Quantum Oracle Forensics** challenge (IBM Qiskit Fall Fest 2026
 Given a sealed 8-bit oracle `U|x⟩|y⟩ = |x⟩|y ⊕ f(x)⟩` and a budget of 60 noisy queries,
 `solve()` decides which of the eight families `f` belongs to and recovers its secret.
 
-**Team:** *(names)*
+**Team:** Dheeraj VR, Faaz Muhammed, Himanshu Tembhurne, C Santosh*
 
 ---
 
