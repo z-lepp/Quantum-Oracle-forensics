@@ -1,36 +1,3 @@
-"""Quantum Oracle Forensics solver (IBM Qiskit Fall Fest 2026, QC@IITI x QryptoNox).
-
-solve(n, m, budget, families, run) -> (family, secret)
-
-Strategy
---------
-Exact Bayesian inference over every (family, secret) hypothesis allowed by m, with the
-section-3 noise model inside the likelihoods; adaptive experiment design (run the circuit
-with the highest expected information gain per query); sequential stopping (answer as soon
-as the top answer has posterior >= 1 - DELTA, or when the budget is spent).
-
-* Noise level is not assumed: every hypothesis is paired with the nominal (4% misfire, 2%
-  readout) and the doubled (8%, 4%) setting, and the posterior marginalises over both.
-* Readout repetition: spare qubits receive CNOT copies of measured qubits right before
-  measurement.  Readout flips are independent per measured bit, so two agreeing copies are
-  almost surely right and a disagreement turns a silent error into a known erasure.  Costs
-  no queries; it only uses qubits below the 20-qubit cap.
-
-m = 8  (simon / simon2 / perm): Simon sampling circuit H-U-H; the measured z is uniform on
-       the annihilator of the hidden subspace.  The likelihood has a closed form through the
-       Walsh transform of the per-bit readout likelihoods, so all 1 + 255 + 10795 hypotheses
-       are scored exactly after every shot.
-m = 1  (constant / balanced / linear / grover / randfun): a menu of circuits
-         G(j, H): phase oracle, j Grover iterations, Hadamard-basis readout
-                  (j = 1 is Deutsch-Jozsa / Bernstein-Vazirani; even j is an "echo" that
-                  returns a balanced function exactly to z = 0 but not a randfun),
-         G(j, Z): j Grover iterations, computational readout (search for the marked input),
-         C(x, y0): classical query of f(x), answer qubit initialised to y0 (alternated so a
-                  misfire, which leaves y0 unchanged, does not bias the bit).
-       Outcome probabilities come from an exact two-level (marked / unmarked) density-matrix
-       model including misfires: exact for constant, linear and grover; exact in P(z = 0)
-       for balanced / randfun with the other outcomes taken as uniform.
-"""
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Gate
@@ -51,7 +18,7 @@ M1_FAMILIES = ("constant", "linear", "grover", "balanced", "randfun")
 M8_FAMILIES = ("simon", "simon2", "perm")
 
 
-# ----------------------------------------------------------------------------- helpers
+#helpers
 def _popcount(n):
     return np.array([bin(i).count("1") for i in range(2 ** n)], dtype=np.int64)
 
@@ -71,8 +38,6 @@ def _readout_kernel(n, eps):
 
 
 def _design_eps(eps, copies):
-    """Binary-symmetric error rate with the same capacity as `copies` noisy readings of a bit.
-    Only used to score candidate experiments; updates use the exact per-bit likelihoods."""
     if copies == 1:
         return eps
     # mutual information of the repetition channel with a uniform input bit
@@ -95,7 +60,6 @@ def _design_eps(eps, copies):
 
 
 def _per_bit(readings, eps):
-    """readings[k] = list of observed values for bit k -> (g0, g1) = P(readings | bit = 0/1)."""
     g0 = np.ones(len(readings))
     g1 = np.ones(len(readings))
     for k, rs in enumerate(readings):
@@ -106,7 +70,6 @@ def _per_bit(readings, eps):
 
 
 def _expand_counts(counts):
-    """counts dict -> list of integer clbit values, one per shot."""
     shots = []
     for key, c in counts.items():
         shots += [int(key.replace(" ", ""), 2)] * c
@@ -122,7 +85,7 @@ def _normalise_log(logw):
     return w / w.sum()
 
 
-# ----------------------------------------------------------------------------- circuits
+#  circuits
 def _diffusion(qc, n):
     qc.h(range(n))
     qc.x(range(n))
@@ -134,13 +97,10 @@ def _diffusion(qc, n):
 
 
 def m1_copies(n):
-    """Copies per input bit that fit next to the n inputs and the answer qubit."""
     return 1 + (MAX_QUBITS - n - 1) // n
 
 
 def grover_circuit(n, j, hadamard_readout, copies=1):
-    """H^n, answer qubit in |->, j x (oracle, diffusion), optional H^n, then measure the
-    inputs; copy c of input k sits on qubit n+1+(c-1)n+k and clbit c*n+k."""
     qc = QuantumCircuit(n + 1 + (copies - 1) * n, copies * n)
     qc.x(n)
     qc.h(n)
@@ -187,11 +147,8 @@ def simon_circuit(n, m, copy_bits=()):
     return qc
 
 
-# ----------------------------------------------------------------------------- 2-level model
+#  2-level model
 def two_level(q, j, pm):
-    """Exact misfire-averaged state after j Grover iterations for a function whose fraction
-    of marked inputs is q (array).  Returns (P[z = 0] with Hadamard readout,
-    total probability on marked inputs with computational readout)."""
     q = np.atleast_1d(np.asarray(q, dtype=float))
     th = np.arcsin(np.sqrt(np.clip(q, 0, 1)))
     s = np.stack([np.sin(th), np.cos(th)], axis=-1)              # basis (marked, unmarked)
@@ -206,7 +163,7 @@ def two_level(q, j, pm):
     return np.clip(p0, 0, 1), np.clip(pg, 0, 1)
 
 
-# ----------------------------------------------------------------------------- m = 1 engine
+#  m = 1 engine
 class M1Model:
     """Hypothesis atoms (per noise level):
         constant c (2) | linear (a, b) ((2^n - 1) * 2) | grover t (2^n) | balanced (1) |
@@ -472,7 +429,7 @@ def solve_m1(n, budget, families, run, menu=("echo", "search", "classical"), rng
     return model.decode(int(np.argmax(post)))
 
 
-# ----------------------------------------------------------------------------- m = 8 engine
+# m = 8 engine
 def _subspaces_2d(N):
     trip = []
     for a in range(1, N):
@@ -484,12 +441,6 @@ def _subspaces_2d(N):
 
 
 class M8Model:
-    """Hypotheses: perm | simon s (N - 1) | simon2 H (every 2-dim subspace), x noise levels.
-
-    With per-bit readout likelihoods g_k(0), g_k(1) for one shot, the probability of the
-    readings under hidden subspace V is
-        prod_k (g_k(0)+g_k(1)) * [ (1-pm)/N * sum_{v in V} prod_{k in v} c_k  +  pm * prod_k g_k(0)/(g_k(0)+g_k(1)) ]
-    with c_k = (g_k(0) - g_k(1)) / (g_k(0) + g_k(1)) (Walsh transform over the annihilator)."""
 
     def __init__(self, n, families):
         self.n = n
@@ -516,7 +467,7 @@ class M8Model:
             g0, g1 = _per_bit(readings, eps)
             tot = g0 + g1
             c = (g0 - g1) / tot
-            T = np.prod(np.where(self.bits == 1, c[None, :], 1.0), axis=1)      # T[v]
+            T = np.prod(np.where(self.bits == 1, c[None, :], 1.0), axis=1)      
             mis = np.prod(g0 / tot)
             base = np.empty(self.H)
             base[self.slices["perm"]] = 1.0
@@ -545,7 +496,6 @@ def solve_m8(n, m, budget, families, run, first_batch=6, delta=DELTA, readout_co
              log=None, fixed_shots=None):
     model = M8Model(n, families)
     spare = MAX_QUBITS - n - m if readout_copies else 0
-    # rotate which input bits get a duplicate readout so every bit is protected equally often
     groups = [tuple((g * spare + i) % n for i in range(min(spare, n))) for g in range(n)] if spare else [()]
     groups = list(dict.fromkeys(groups))
     used = 0
@@ -572,7 +522,7 @@ def solve_m8(n, m, budget, families, run, first_batch=6, delta=DELTA, readout_co
     return model.decode(int(np.argmax(model.posterior())))
 
 
-# ----------------------------------------------------------------------------- entry point
+# entry point
 def solve(n, m, budget, families, run):
     if m == 1:
         return solve_m1(n, budget, families, run, rng=np.random.default_rng(SEED))
