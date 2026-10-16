@@ -18,7 +18,7 @@ Given a sealed 8-bit oracle `U|x⟩|y⟩ = |x⟩|y ⊕ f(x)⟩` and a budget of 
 | `qof_report.pdf` | Technical report, 3 pages (LaTeX source: `report/qof_report.tex`) |
 | `logs/` | Logs of our own tests; every number in the report comes from these files |
 | `circuit diagrams/` | Contains the circuit diagrams |
-| `AI_USE.md` | One-page AI-use disclosure |
+| `AI_usage_disclosure.pdf` | One-page AI-use disclosure |
 
 ---
 
