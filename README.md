@@ -1,63 +1,159 @@
-# quantum-oracle-forensics
+# Quantum Oracle Forensics
 
-Solver for **Quantum Oracle Forensics** (IBM Qiskit Fall Fest 2026, QC@IITI × QryptoNox):
-given a sealed 8-bit oracle `U|x>|y> = |x>|y ⊕ f(x)>` and 60 noisy queries, identify which of
-eight families it belongs to and recover its secret.
+Solver for the **Quantum Oracle Forensics** challenge (IBM Qiskit Fall Fest 2026, QC@IITI × QryptoNox).
 
-## Layout
+Given a sealed 8-bit oracle `U|x⟩|y⟩ = |x⟩|y ⊕ f(x)⟩` and a budget of 60 noisy queries,
+`solve()` decides which of the eight families `f` belongs to and recovers its secret.
 
-| path | what |
+**Team:** *(names)*
+
+---
+
+## Repository contents
+
+| Path | What it is |
 |---|---|
-| `solver.py` | the submission: `solve(n, m, budget, families, run) -> (family, secret)` |
-| `sim/oracles.py` | random instances of all eight families + the section-4 reference examples |
-| `sim/runner.py` | local `run(circuit, shots)`: numpy state-vector simulator with the section-3 noise model (oracle misfire, readout flips), Qiskit bit order and budget enforcement |
-| `baselines.py` | section-9 baselines: classical-only, single-algorithm, non-adaptive, random guess |
-| `bench.py` | accuracy, worst-family accuracy, query saving, stress noise, confusion matrix, accuracy vs budget; writes `logs/` |
-| `tests/` | simulator checks against section 4, bit-order checks, model-vs-simulator checks, simulator vs Qiskit `Statevector`, rule checks (measurement at end, ≤ 20 qubits, allowed imports), solver smoke tests |
-| `logs/` | benchmark outputs referenced by the report (`summary_final.md` is the one the report cites) |
-| `reference/claude_solver.py` | an independently written second solver, used only for paired comparison (`bench.py --reference`) |
-| `MANUAL.md` | full project manual: how the problem was assessed, timeline, methodology, problems and fixes, comparison, limitations, Git workflow |
+| `solver.py` | The submission: `solve(n, m, budget, families, run) -> (family, secret)` |
+| `requirements.txt` | Dependencies of `solver.py` (Qiskit 2.x, numpy, scipy) |
+| `report/qof_report.pdf` | Technical report, 3 pages (LaTeX source: `report/qof_report.tex`) |
+| `logs/` | Logs of our own tests; every number in the report comes from these files |
+| `AI_USE.md` | One-page AI-use disclosure |
 
-`solver.py` imports only Qiskit, numpy, scipy and the standard library. It never imports
-`sim/`; the oracle is reached only through `run()`.
+---
 
 ## Setup
 
+Python 3.10 or newer.
+
 ```bash
-git clone https://github.com/SantoshChez03/quantum-oracle-forensics.git
-cd quantum-oracle-forensics
+git clone https://github.com/z-lepp/Quantum-Oracle-forensics.git
+cd Quantum-Oracle-forensics
 python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements.txt -r requirements-dev.txt   # Windows
-# .venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt    # Linux / macOS
+.venv\Scripts\activate            # Windows
+# source .venv/bin/activate       # macOS / Linux
+pip install -r requirements.txt
 ```
 
-Tested with Python 3.14, Qiskit 2.5.2, numpy 2.5.4, scipy 1.18.1.
+Tested with Python 3.13–3.14, Qiskit 2.5.2, numpy 2.x and scipy 1.18.
 
-## Run
+---
 
-```bash
-python -m pytest -q                                   # tests
-python bench.py --per-family 50 --workers 8 --tag final   # full benchmark -> logs/
-python bench.py --per-family 10 --only ours,ours_stress   # quick check
-python bench.py --per-family 50 --tag final --reference   # also run reference/claude_solver.py on the same oracles
-```
-
-Use from a judge harness:
+## Usage
 
 ```python
 from solver import solve
-family, secret = solve(8, m, 60, families, run)
+
+family, secret = solve(n, m, budget, families, run)
 ```
 
-## Strategy in one paragraph
+| Argument | Meaning |
+|---|---|
+| `n` | number of input bits (8) |
+| `m` | number of output bits (1 or 8) |
+| `budget` | query budget (60) |
+| `families` | list of family names the oracle may belong to |
+| `run` | the judges' `run(circuit, shots)`: takes a Qiskit 2.x `QuantumCircuit`, returns a counts dictionary keyed by classical-bit strings in Qiskit order |
 
-Every (family, secret) hypothesis allowed by `m` is scored exactly by Bayes' rule using the
-section-3 noise model, marginalised over nominal and doubled noise. For `m = 8` a single Simon
-sampling circuit suffices; closed-form Walsh-domain likelihoods score all 1 + 255 + 10 795
-perm / simon / simon2 hypotheses after every shot. For `m = 1` the solver picks, shot by shot, the
-circuit with the highest expected information gain per query from a menu of Deutsch–Jozsa /
-Bernstein–Vazirani, "Grover echo" (even numbers of Grover iterations, which return a balanced
-function exactly to z = 0 but not a randfun), Grover search, and classical queries. It stops
-as soon as the top answer's posterior is at least 1 − δ. Spare qubits hold CNOT copies of measured qubits, so readout
-flips show up as detected disagreements instead of silent errors, at no query cost.
-Details, thresholds and results are in the report.
+Every oracle call in the solver's circuits is the placeholder `Gate("oracle", n + m, [])`,
+acting on the `n` input qubits followed by the `m` output qubits. `run()` replaces it with the
+sealed oracle. The solver never reaches the oracle any other way.
+
+### Return values
+
+| Family | `m` | `secret` returned |
+|---|---|---|
+| `constant` | 1 | `c` as an int (0 or 1) |
+| `balanced` | 1 | `None` |
+| `linear` | 1 | `[a, b]`, ints, `a` in 1–255 |
+| `grover` | 1 | `t` as an int (0–255) |
+| `randfun` | 1 | `None` |
+| `simon` | 8 | `s` as an int (1–255) |
+| `simon2` | 8 | the three nonzero elements of `H`, ascending, as a list of ints |
+| `perm` | 8 | `None` |
+
+All values are plain Python `int`s, not numpy types.
+
+---
+
+## What `solve()` does at runtime
+
+- Calls `run()` with **one shot per call**, at most 60 times per oracle, choosing each circuit based
+  on the results so far.
+- Counts its own queries (oracle gates × shots) and **never exceeds the budget**.
+- Uses **at most 20 qubits** per circuit and puts **all measurements at the end**.
+- Imports only **Qiskit, numpy, scipy** and the standard library. It reads no files, prints nothing
+  and uses no network.
+- Is **deterministic** for a given sequence of `run()` results (its own random choices use a fixed seed).
+- Needs at most about 5 s of its own computation per oracle (measured up to 4.3 s on a 2-core
+  machine, time spent inside `run()` excluded), far below the 120 s limit.
+
+### Circuits used
+
+| Circuit | Qubits | Queries per shot | Purpose |
+|---|---|---|---|
+| Deutsch–Jozsa / Bernstein–Vazirani | 17 | 1 | separates constant & grover / linear / balanced & randfun; gives `a` for linear |
+| Grover echo (2 or 4 iterations, Hadamard readout) | 17 | 2 or 4 | separates balanced from randfun |
+| Grover search (6–12 iterations) | 17 | 6–12 | finds the marked input `t` |
+| Classical query of `f(x)` | 11 | 1 | reads `b`, `c`, and verifies a Grover candidate |
+| Simon sampling (`m = 8`) | 20 | 1 | constraints on the hidden subspace (simon, simon2, perm) |
+
+Spare qubits hold CNOT copies of the measured qubits (8 copies in the 17-qubit circuits, 2 in the
+classical query, 4 in Simon). Readout flips are independent per measured bit, so copies that agree are
+almost surely right, and a disagreement shows up as a detected error instead of a silent one. The
+copies cost no queries.
+
+---
+
+## Strategy in brief
+
+- **Exact Bayesian inference** over every possible answer: up to 1 + 255 + 10 795 hypotheses for
+  `m = 8`, and constant / linear `(a, b)` / grover `t` / balanced / randfun for `m = 1`. The noise
+  model (4% oracle misfire, 2% readout flip) is built into every likelihood.
+- **The noise level is not assumed.** Each hypothesis is paired with both nominal and doubled noise,
+  and the posterior averages over the two, so the stress setting needs no retuning.
+- **Adaptive experiments.** Before each shot, the solver runs the circuit with the highest expected
+  information gain per query.
+- **Sequential stopping.** It answers as soon as one answer has posterior probability ≥ 1 − δ
+  (δ = 0.003, chosen by a sweep in `logs/summary_delta_*.md`), or when the budget runs out.
+
+The full description, with the decision rules, thresholds, budget split, baselines and failure
+analysis, is in `report/qof_report.pdf`.
+
+---
+
+## Results from our own tests
+
+400 random oracles, 50 per family, with the same oracles used in every experiment.
+
+| Setting | Accuracy | Worst family | Query saving | Mean queries |
+|---|---|---|---|---|
+| Nominal noise (4%, 2%) | **0.998** | 0.98 | 0.591 | 24.5 |
+| Stress noise (8%, 4%) | **0.990** | 0.96 | 0.463 | 32.2 |
+
+Per-family accuracy and queries, the confusion matrices, the baselines (classical-only, single
+algorithm, non-adaptive, random guess) and accuracy at budgets of 20–60 are in
+`logs/summary_final.md` and the report.
+
+### About the logs
+
+The logs were produced with our own local test harness, which is not part of this repository. It
+consists of:
+- a NumPy state-vector simulator of the section-3 oracle and noise model (checked against every
+  section-4 reference value and against Qiskit's `Statevector`);
+- a benchmark script that runs `solve()` on fixed-seed random oracles.
+
+| File | Contents |
+|---|---|
+| `logs/summary_final.md` | main results, baselines, budget sweep, confusion matrices, list of failures |
+| `logs/bench_final.json` | one record per task: true family and secret, answer, queries used, time |
+| `logs/summary_delta_*.md`, `logs/bench_delta_*.json` | stopping-threshold sweep, δ ∈ {0.03, 0.01, 0.003, 0.001}, 40 oracles per family |
+
+Rows labelled `claude_reference` in the logs come from a separately written second solver. We used it
+only to cross-check our results; it is not part of the submission.
+
+---
+
+## AI use
+
+AI assistants were used during the hackathon. Details, and how the results were checked
+independently, are in `AI_USE.md`.
